@@ -1,0 +1,67 @@
+// Jenkinsfile - Đề tài 37: CI/CD với Jenkins cho dự án Python mẫu (casio-demo)
+// Pipeline 4 stage: Lấy mã nguồn -> Biên dịch -> Chạy kiểm thử -> Triển khai
+// Yêu cầu plugin: Pipeline, Git, GitHub, Timestamper (đều nằm trong Suggested Plugins)
+pipeline {
+    agent any
+
+    options {
+        skipDefaultCheckout(true)          // chỉ checkout một lần, ở stage 1
+        timestamps()                       // gắn mốc giờ vào Console Output
+        timeout(time: 10, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+    }
+
+    stages {
+        stage('1. Lấy mã nguồn') {
+            steps {
+                checkout scm
+                sh 'git log -1 --pretty=format:"Commit %h - %s (%an)"'
+            }
+        }
+
+        stage('2. Biên dịch') {
+            steps {
+                // Không xóa release/: bản triển khai cũ vẫn còn nếu build này lỗi
+                sh '''
+                    rm -rf build __pycache__
+                    mkdir -p build
+                    python3 -m compileall -q app.py
+                    tar -czf build/casio-demo.tgz app.py
+                '''
+            }
+        }
+
+        stage('3. Chạy kiểm thử') {
+            steps {
+                // Có test lỗi thì lệnh trả mã != 0, pipeline dừng, stage 4 bị bỏ qua
+                sh 'python3 -m unittest -v test_app.py'
+            }
+        }
+
+        stage('4. Triển khai') {
+            steps {
+                sh '''
+                    rm -rf release
+                    mkdir -p release
+                    tar -xzf build/casio-demo.tgz -C release
+                    {
+                        echo "build=${BUILD_NUMBER}"
+                        echo "commit=$(git rev-parse --short HEAD)"
+                        echo "deployed_at=$(date '+%Y-%m-%d %H:%M:%S')"
+                    } > release/BUILD_INFO.txt
+                    echo "--- Smoke check trên bản vừa triển khai ---"
+                    python3 release/app.py power 2 10
+                    python3 release/app.py factorial 5
+                    cat release/BUILD_INFO.txt
+                '''
+                archiveArtifacts artifacts: 'build/casio-demo.tgz, release/BUILD_INFO.txt',
+                                 fingerprint: true
+            }
+        }
+    }
+
+    post {
+        success { echo 'THÀNH CÔNG: bản mới đã được triển khai vào release/' }
+        failure { echo 'THẤT BẠI: pipeline dừng, release/ giữ nguyên bản cũ' }
+    }
+}
